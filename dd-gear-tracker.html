@@ -117,6 +117,53 @@
             50%       { opacity: 0.4; }
         }
 
+        /* ── アカウント切替 ── */
+        .account-section {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px 20px;
+            margin-bottom: 18px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .account-label {
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            letter-spacing: 0.06em;
+            white-space: nowrap;
+        }
+        .account-select {
+            font-family: 'Noto Sans JP', sans-serif;
+            font-size: 0.9rem;
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border-bright);
+            border-radius: 7px;
+            padding: 7px 10px;
+            cursor: pointer;
+        }
+        .account-select:focus { outline: 1px solid var(--teal); }
+        .btn-account {
+            font-size: 0.85rem;
+            padding: 7px 14px;
+            background: rgba(232,184,75,0.08);
+            border-color: rgba(232,184,75,0.3);
+            color: var(--accent);
+        }
+        .btn-account:hover { background: rgba(232,184,75,0.15); }
+        .btn-account-delete {
+            background: rgba(240,82,82,0.08);
+            border-color: rgba(240,82,82,0.3);
+            color: var(--red);
+        }
+        .btn-account-delete:hover { background: rgba(240,82,82,0.15); }
+
         /* ── プログレス ── */
         .progress-section {
             background: var(--bg-panel);
@@ -350,7 +397,7 @@
     <!-- 上部UI：画面幅内に収める -->
     <div class="top-ui">
         <header class="app-header">
-            <h1 class="app-title">⚔ デュナミス～ダイバージェンス～装備管理表 ⚔</h1>
+            <h1 class="app-title">⚔ DD装備管理表 ⚔</h1>
             <p class="app-subtitle">Equipment Tracker — localStorage Edition</p>
         </header>
 
@@ -359,6 +406,14 @@
                 <span class="dot"></span>
                 ブラウザに自動保存されます（localStorage使用）
             </span>
+        </div>
+
+        <div class="account-section">
+            <span class="account-label">👤 アカウント:</span>
+            <select class="account-select" id="account-select" onchange="switchAccount(this.value)"></select>
+            <button class="btn btn-account" onclick="addAccount()">➕ 追加</button>
+            <button class="btn btn-account" onclick="renameAccount()">✎ 名称変更</button>
+            <button class="btn btn-account btn-account-delete" onclick="deleteAccount()">🗑 削除</button>
         </div>
 
         <div class="progress-section">
@@ -411,12 +466,140 @@
     var baseSlots  = ['head','body','hands','legs','feet'];
     var slotNames  = ['Head (Win)','Body (All)','Hands (Bas)','Legs (Jeu)','Feet (San)'];
     var levels     = ['+2','+3'];
-    var STORAGE_KEY = 'dd_equipment_progress';
+
+    // ── アカウント管理 ──
+    // 旧バージョン（単一アカウント）で使用していたキー。移行専用。
+    var LEGACY_STORAGE_KEY   = 'dd_equipment_progress';
+    var ACCOUNTS_LIST_KEY    = 'dd_accounts_list';
+    var CURRENT_ACCOUNT_KEY  = 'dd_current_account';
+
+    var accounts = [];           // [{id, name}, ...]
+    var currentAccountId = null;
     var checkboxStates = {};
+
+    function dataKeyFor(accountId) { return 'dd_equipment_progress_' + accountId; }
+
+    function loadAccountsList() {
+        try {
+            var raw = localStorage.getItem(ACCOUNTS_LIST_KEY);
+            if (raw) {
+                var parsed = JSON.parse(raw);
+                if (Array.isArray(parsed) && parsed.length > 0) { accounts = parsed; return; }
+            }
+        } catch(e) {}
+
+        // 初回起動、または旧バージョンからの移行
+        accounts = [];
+        var migratedId = null;
+        try {
+            var legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+            if (legacy) {
+                migratedId = 'acc_' + Date.now();
+                localStorage.setItem(dataKeyFor(migratedId), legacy);
+                localStorage.removeItem(LEGACY_STORAGE_KEY);
+            }
+        } catch(e) {}
+
+        accounts.push({ id: migratedId || ('acc_' + Date.now()), name: 'アカウント1' });
+        saveAccountsList();
+    }
+
+    function saveAccountsList() {
+        try { localStorage.setItem(ACCOUNTS_LIST_KEY, JSON.stringify(accounts)); } catch(e) {}
+    }
+
+    function loadCurrentAccountId() {
+        var saved = null;
+        try { saved = localStorage.getItem(CURRENT_ACCOUNT_KEY); } catch(e) {}
+        if (saved && accounts.some(function(a) { return a.id === saved; })) {
+            currentAccountId = saved;
+        } else {
+            currentAccountId = accounts[0].id;
+            saveCurrentAccountId();
+        }
+    }
+
+    function saveCurrentAccountId() {
+        try { localStorage.setItem(CURRENT_ACCOUNT_KEY, currentAccountId); } catch(e) {}
+    }
+
+    function renderAccountSelect() {
+        var sel = document.getElementById('account-select');
+        sel.innerHTML = '';
+        accounts.forEach(function(a) {
+            var opt = document.createElement('option');
+            opt.value = a.id;
+            opt.textContent = a.name;
+            if (a.id === currentAccountId) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    }
+
+    function applyCheckboxStatesToTable() {
+        jobs.forEach(function(job) {
+            baseSlots.forEach(function(slot) {
+                levels.forEach(function(level) {
+                    var cb = document.getElementById(job + '-' + slot + '-' + level);
+                    cb.checked = checkboxStates[cb.id] === true;
+                });
+            });
+        });
+        updateProgress();
+    }
+
+    function switchAccount(newId) {
+        if (!newId || newId === currentAccountId) return;
+        currentAccountId = newId;
+        saveCurrentAccountId();
+        loadFromLocalStorage();
+        applyCheckboxStatesToTable();
+        var acc = accounts.find(function(a) { return a.id === currentAccountId; });
+        document.getElementById('last-saved').textContent = '「' + (acc ? acc.name : '') + '」に切り替えました';
+    }
+
+    function addAccount() {
+        var name = prompt('新しいアカウント名を入力してください', 'アカウント' + (accounts.length + 1));
+        if (name === null) return;
+        name = name.trim();
+        if (!name) { alert('アカウント名を入力してください。'); return; }
+        var newId = 'acc_' + Date.now();
+        accounts.push({ id: newId, name: name });
+        saveAccountsList();
+        renderAccountSelect();
+        document.getElementById('account-select').value = newId;
+        switchAccount(newId);
+    }
+
+    function renameAccount() {
+        var acc = accounts.find(function(a) { return a.id === currentAccountId; });
+        if (!acc) return;
+        var name = prompt('新しい名前を入力してください', acc.name);
+        if (name === null) return;
+        name = name.trim();
+        if (!name) { alert('アカウント名を入力してください。'); return; }
+        acc.name = name;
+        saveAccountsList();
+        renderAccountSelect();
+    }
+
+    function deleteAccount() {
+        if (accounts.length <= 1) { alert('最後のアカウントは削除できません。'); return; }
+        var acc = accounts.find(function(a) { return a.id === currentAccountId; });
+        if (!acc) return;
+        if (!confirm('アカウント「' + acc.name + '」を削除しますか？\nこのアカウントの進捗データも削除されます。')) return;
+        try { localStorage.removeItem(dataKeyFor(currentAccountId)); } catch(e) {}
+        accounts = accounts.filter(function(a) { return a.id !== currentAccountId; });
+        saveAccountsList();
+        currentAccountId = accounts[0].id;
+        saveCurrentAccountId();
+        renderAccountSelect();
+        loadFromLocalStorage();
+        applyCheckboxStatesToTable();
+    }
 
     function saveToLocalStorage() {
         try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(checkboxStates));
+            localStorage.setItem(dataKeyFor(currentAccountId), JSON.stringify(checkboxStates));
             var now = new Date().toLocaleString('ja-JP');
             document.getElementById('last-saved').textContent = '最終保存: ' + now;
         } catch(e) {
@@ -426,25 +609,29 @@
 
     function loadFromLocalStorage() {
         try {
-            var saved = localStorage.getItem(STORAGE_KEY);
+            var saved = localStorage.getItem(dataKeyFor(currentAccountId));
             if (!saved) { checkboxStates = {}; return false; }
             var parsed = JSON.parse(saved);
             if (typeof parsed === 'object' && parsed !== null) { checkboxStates = parsed; return true; }
-            localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(dataKeyFor(currentAccountId));
             checkboxStates = {};
             return false;
         } catch(e) {
-            try { localStorage.removeItem(STORAGE_KEY); } catch(_) {}
+            try { localStorage.removeItem(dataKeyFor(currentAccountId)); } catch(_) {}
             checkboxStates = {};
             return false;
         }
     }
 
     function clearLocalStorage() {
-        try { localStorage.removeItem(STORAGE_KEY); document.getElementById('last-saved').textContent = ''; } catch(e) {}
+        try { localStorage.removeItem(dataKeyFor(currentAccountId)); document.getElementById('last-saved').textContent = ''; } catch(e) {}
     }
 
     function initTable() {
+        loadAccountsList();
+        loadCurrentAccountId();
+        renderAccountSelect();
+
         var tableBody = document.getElementById('table-body');
         tableBody.innerHTML = '';
         var loaded = loadFromLocalStorage();
@@ -478,7 +665,11 @@
         });
 
         updateProgress();
-        document.getElementById('last-saved').textContent = loaded ? 'データをブラウザから復元しました' : '新規データです';
+        var currentAcc = accounts.find(function(a) { return a.id === currentAccountId; });
+        var accName = currentAcc ? currentAcc.name : '';
+        document.getElementById('last-saved').textContent = loaded
+            ? '「' + accName + '」のデータをブラウザから復元しました'
+            : '「' + accName + '」の新規データです';
 
         // テーブル幅をページの最小幅に設定してバウンスを防ぐ
         syncPageWidth();
@@ -545,7 +736,8 @@
     }
 
     function resetAll() {
-        if (!confirm('すべての進捗をリセットしますか？')) return;
+        var acc = accounts.find(function(a) { return a.id === currentAccountId; });
+        if (!confirm('「' + (acc ? acc.name : '') + '」のすべての進捗をリセットしますか？')) return;
         jobs.forEach(function(job) {
             baseSlots.forEach(function(slot) {
                 levels.forEach(function(level) {
@@ -558,34 +750,33 @@
     }
 
     function exportProgress() {
-        var blob = new Blob([JSON.stringify({timestamp:new Date().toISOString(),version:'2.0',data:checkboxStates},null,2)],{type:'application/json'});
+        var acc = accounts.find(function(a) { return a.id === currentAccountId; });
+        var accName = acc ? acc.name : '';
+        var blob = new Blob([JSON.stringify({timestamp:new Date().toISOString(),version:'3.0',account:accName,data:checkboxStates},null,2)],{type:'application/json'});
         var a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = 'dd_progress_' + new Date().toISOString().split('T')[0] + '.json';
+        var safeName = accName.replace(/[\\/:*?"<>|]/g, '_');
+        a.download = 'dd_progress_' + safeName + '_' + new Date().toISOString().split('T')[0] + '.json';
         a.click(); URL.revokeObjectURL(a.href);
-        alert('エクスポートしました。');
+        alert('「' + accName + '」の進捗をエクスポートしました。');
     }
 
     function importProgress() {
+        var acc = accounts.find(function(a) { return a.id === currentAccountId; });
+        var accName = acc ? acc.name : '';
         var input = document.createElement('input');
         input.type = 'file'; input.accept = '.json';
         input.onchange = function(e) {
             var file = e.target.files[0]; if (!file) return;
+            if (!confirm('「' + accName + '」に読み込みます。現在の進捗は上書きされます。よろしいですか？')) return;
             var reader = new FileReader();
             reader.onload = function(ev) {
                 try {
                     var d = JSON.parse(ev.target.result);
                     checkboxStates = d.data || d;
-                    jobs.forEach(function(job) {
-                        baseSlots.forEach(function(slot) {
-                            levels.forEach(function(level) {
-                                var cb = document.getElementById(job+'-'+slot+'-'+level);
-                                cb.checked = checkboxStates[cb.id] || false;
-                            });
-                        });
-                    });
-                    updateProgress(); saveToLocalStorage();
-                    alert('インポートしました。');
+                    applyCheckboxStatesToTable();
+                    saveToLocalStorage();
+                    alert('「' + accName + '」にインポートしました。');
                 } catch(_) { alert('読み込みに失敗しました。'); }
             };
             reader.readAsText(file);
@@ -594,6 +785,7 @@
     }
 
     function showStats() {
+        var acc = accounts.find(function(a) { return a.id === currentAccountId; });
         var done=0, partial=0, stats={};
         baseSlots.forEach(function(s){levels.forEach(function(l){stats[s+'-'+l]=0;});});
         jobs.forEach(function(job) {
@@ -601,7 +793,7 @@
             baseSlots.forEach(function(s){levels.forEach(function(l){if(document.getElementById(job+'-'+s+'-'+l).checked){n++;stats[s+'-'+l]++;}});});
             if(n===10)done++; else if(n>0)partial++;
         });
-        var msg='📊 統計情報 📊\n\n完了:'+done+'/'+jobs.length+'\n進行中:'+partial+'/'+jobs.length+'\n未着手:'+(jobs.length-done-partial)+'/'+jobs.length+'\n\n部位別:\n';
+        var msg='📊 統計情報（'+(acc?acc.name:'')+'） 📊\n\n完了:'+done+'/'+jobs.length+'\n進行中:'+partial+'/'+jobs.length+'\n未着手:'+(jobs.length-done-partial)+'/'+jobs.length+'\n\n部位別:\n';
         baseSlots.forEach(function(s,i){msg+=slotNames[i]+' +2:'+stats[s+'-+2']+'/'+jobs.length+'  +3:'+stats[s+'-+3']+'/'+jobs.length+'\n';});
         alert(msg);
     }
